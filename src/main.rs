@@ -4,27 +4,29 @@
 #![no_main]
 #![no_std]
 
-use cortex_m_semihosting::{hprintln};
+use cortex_m_semihosting::hprintln;
 use panic_semihosting as _;
-use rtfm::cyccnt::{U32Ext as _};
+use rtfm::cyccnt::U32Ext as _;
 
 use stm32f1xx_hal::gpio::gpiob::*;
 use stm32f1xx_hal::gpio::*;
-use stm32f1xx_hal::prelude::*;
 use stm32f1xx_hal::i2c::{BlockingI2c, DutyCycle, Mode};
-use stm32f1xx_hal::stm32::{I2C1};
+use stm32f1xx_hal::prelude::*;
+use stm32f1xx_hal::stm32::I2C1;
 
 use rotary_encoder_hal::{Direction, Rotary};
 
+//use embedded_graphics::{circle, icoord, line, rect, text_6x8, triangle};
+use embedded_graphics::{icoord, text_6x8};
+use ssd1306::interface::i2c::I2cInterface;
 use ssd1306::prelude::*;
 use ssd1306::Builder;
-use ssd1306::interface::i2c::I2cInterface;
 
 const ROTARY_ENCODER_PERIOD: u32 = 720_000;
 const FLOW_COUNTER_PERIOD: u32 = 500_000;
 const UPDATE_DISPLAY_PERIOD: u32 = 7_200_000;
 
-static CONTAINER_SIZES: [(u16, &str);7] = [
+static CONTAINER_SIZES: [(u16, &str); 7] = [
     (330, "330mL Bottle"),
     (500, "500mL Bottle"),
     (1000, "1L Bottle"),
@@ -32,21 +34,23 @@ static CONTAINER_SIZES: [(u16, &str);7] = [
     (5000, "5L Keg"),
     (9540, "9.45L Keg"),
     (18000, "18L Keg"),
-    ];
+];
 
+type Display = GraphicsMode<
+    I2cInterface<BlockingI2c<I2C1, (PB8<Alternate<OpenDrain>>, PB9<Alternate<OpenDrain>>)>>,
+>;
 
 // RTFM main declaration
 #[rtfm::app(device = stm32f1xx_hal::pac, peripherals = true, monotonic = rtfm::cyccnt::CYCCNT)]
 const APP: () = {
     struct Resources {
-        rotary_encoder: Rotary<PB10<Input<PullUp>>,PB11<Input<PullUp>>>,
-        display: GraphicsMode<I2cInterface<BlockingI2c<I2C1, (PB8<Alternate<OpenDrain>>, PB9<Alternate<OpenDrain>>)>>>,
+        rotary_encoder: Rotary<PB10<Input<PullUp>>, PB11<Input<PullUp>>>,
+        display: Display,
         container_choice: u8,
     }
 
     #[init(schedule = [scan_rotary_encoder, scan_flow_counter])]
-    fn init(mut cx: init::Context) -> init::LateResources{
-
+    fn init(mut cx: init::Context) -> init::LateResources {
         cx.core.DCB.enable_trace();
 
         // semantically, the monotonic timer is frozen at time "zero" during `init`
@@ -72,12 +76,8 @@ const APP: () = {
         let mut _led_pin = portc.pc13.into_push_pull_output(&mut portc.crh);
         let mut _relay_pin = portb.pb1.into_push_pull_output(&mut portb.crl);
 
-        let pin_a = portb
-            .pb10
-            .into_pull_up_input(&mut portb.crh);
-        let pin_b = portb
-            .pb11
-            .into_pull_up_input(&mut portb.crh);
+        let pin_a = portb.pb10.into_pull_up_input(&mut portb.crh);
+        let pin_b = portb.pb11.into_pull_up_input(&mut portb.crh);
 
         let enc = Rotary::new(pin_a, pin_b);
 
@@ -104,13 +104,16 @@ const APP: () = {
         disp.init().unwrap();
         disp.flush().unwrap();
 
-
         hprintln!("init").unwrap();
 
-        cx.schedule.scan_rotary_encoder(now + ROTARY_ENCODER_PERIOD.cycles()).unwrap();
-        cx.schedule.scan_flow_counter(now + FLOW_COUNTER_PERIOD.cycles()).unwrap();
+        cx.schedule
+            .scan_rotary_encoder(now + ROTARY_ENCODER_PERIOD.cycles())
+            .unwrap();
+        cx.schedule
+            .scan_flow_counter(now + FLOW_COUNTER_PERIOD.cycles())
+            .unwrap();
 
-        init::LateResources{
+        init::LateResources {
             rotary_encoder: enc,
             container_choice: 0,
             display: disp,
@@ -119,35 +122,42 @@ const APP: () = {
 
     #[task(schedule = [scan_rotary_encoder], resources = [rotary_encoder, container_choice])]
     fn scan_rotary_encoder(cx: scan_rotary_encoder::Context) {
-
         match cx.resources.rotary_encoder.update().unwrap() {
             Direction::Clockwise => {
-                *cx.resources.container_choice+=1;
+                *cx.resources.container_choice += 1;
                 if *cx.resources.container_choice >= (CONTAINER_SIZES.len() as u8) {
                     *cx.resources.container_choice = (CONTAINER_SIZES.len() as u8) - 1;
                 }
             }
             Direction::CounterClockwise => {
                 if *cx.resources.container_choice > 0 {
-                    *cx.resources.container_choice-=1;
+                    *cx.resources.container_choice -= 1;
                 }
             }
             Direction::None => {}
         }
 
-        cx.schedule.scan_rotary_encoder(cx.scheduled + ROTARY_ENCODER_PERIOD.cycles()).unwrap()
+        cx.schedule
+            .scan_rotary_encoder(cx.scheduled + ROTARY_ENCODER_PERIOD.cycles())
+            .unwrap()
     }
 
     #[task(schedule = [scan_flow_counter])]
     fn scan_flow_counter(cx: scan_flow_counter::Context) {
-
-        cx.schedule.scan_flow_counter(cx.scheduled + FLOW_COUNTER_PERIOD.cycles()).unwrap()
+        cx.schedule
+            .scan_flow_counter(cx.scheduled + FLOW_COUNTER_PERIOD.cycles())
+            .unwrap()
     }
 
     #[task(schedule = [update_display], resources = [container_choice, display])]
     fn update_display(cx: update_display::Context) {
+        cx.resources
+            .display
+            .draw(text_6x8!("Hello world!", stroke = Some(1u8)).translate(icoord!(5, 50)));
 
-        cx.schedule.update_display(cx.scheduled + UPDATE_DISPLAY_PERIOD.cycles()).unwrap();
+        cx.schedule
+            .update_display(cx.scheduled + UPDATE_DISPLAY_PERIOD.cycles())
+            .unwrap();
     }
 
     extern "C" {
