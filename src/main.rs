@@ -17,21 +17,23 @@ use rotary_encoder_hal::{Direction, Rotary};
 const ROTARY_ENCODER_PERIOD: u32 = 720_000;
 const FLOW_COUNTER_PERIOD: u32 = 500_000;
 
-enum ContainerSizes {
-    Bottle330ML,
-    Bottle500ML,
-    Bottle1L,
-    Bottle2L,
-    Keg5L,
-    Keg9_45L,
-    Keg18L,
-}
+static CONTAINER_SIZES: [(u16, &str);7] = [
+    (330, "330mL Bottle"),
+    (500, "500mL Bottle"),
+    (1000, "1L Bottle"),
+    (2000, "2L Bottle"),
+    (5000, "5L Keg"),
+    (9540, "9.45L Keg"),
+    (18000, "18L Keg"),
+    ];
+
 
 // RTFM main declaration
 #[rtfm::app(device = stm32f1xx_hal::pac, peripherals = true, monotonic = rtfm::cyccnt::CYCCNT)]
 const APP: () = {
     struct Resources {
         rotary_encoder: Rotary<PB10<Input<PullUp>>,PB11<Input<PullUp>>>,
+        container_choice: u8,
     }
 
     #[init(schedule = [scan_rotary_encoder, scan_flow_counter])]
@@ -78,18 +80,24 @@ const APP: () = {
 
         init::LateResources{
             rotary_encoder: enc,
+            container_choice: 0,
         }
     }
 
-    #[task(schedule = [scan_rotary_encoder], resources = [rotary_encoder])]
+    #[task(schedule = [scan_rotary_encoder], resources = [rotary_encoder, container_choice])]
     fn scan_rotary_encoder(cx: scan_rotary_encoder::Context) {
 
         match cx.resources.rotary_encoder.update().unwrap() {
             Direction::Clockwise => {
-
+                *cx.resources.container_choice+=1;
+                if *cx.resources.container_choice >= (CONTAINER_SIZES.len() as u8) {
+                    *cx.resources.container_choice = (CONTAINER_SIZES.len() as u8) - 1;
+                }
             }
             Direction::CounterClockwise => {
-
+                if *cx.resources.container_choice > 0 {
+                    *cx.resources.container_choice-=1;
+                }
             }
             Direction::None => {}
         }
