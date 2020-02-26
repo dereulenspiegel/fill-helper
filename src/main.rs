@@ -22,6 +22,7 @@ use ssd1306::interface::i2c::I2cInterface;
 
 const ROTARY_ENCODER_PERIOD: u32 = 720_000;
 const FLOW_COUNTER_PERIOD: u32 = 500_000;
+const UPDATE_DISPLAY_PERIOD: u32 = 7_200_000;
 
 static CONTAINER_SIZES: [(u16, &str);7] = [
     (330, "330mL Bottle"),
@@ -141,6 +142,12 @@ const APP: () = {
     fn scan_flow_counter(cx: scan_flow_counter::Context) {
 
         cx.schedule.scan_flow_counter(cx.scheduled + FLOW_COUNTER_PERIOD.cycles()).unwrap()
+    }
+
+    #[task(schedule = [update_display], resources = [container_choice, display])]
+    fn update_display(cx: update_display::Context) {
+
+        cx.schedule.update_display(cx.scheduled + UPDATE_DISPLAY_PERIOD.cycles()).unwrap();
     }
 
     extern "C" {
