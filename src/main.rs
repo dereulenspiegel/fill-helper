@@ -7,12 +7,18 @@
 use cortex_m_semihosting::{hprintln};
 use panic_semihosting as _;
 use rtfm::cyccnt::{U32Ext as _};
-//use stm32f1xx_hal::gpio::gpioc::*;
+
 use stm32f1xx_hal::gpio::gpiob::*;
 use stm32f1xx_hal::gpio::*;
 use stm32f1xx_hal::prelude::*;
+use stm32f1xx_hal::i2c::{BlockingI2c, DutyCycle, Mode};
+use stm32f1xx_hal::stm32::{I2C1};
 
 use rotary_encoder_hal::{Direction, Rotary};
+
+use ssd1306::prelude::*;
+use ssd1306::Builder;
+use ssd1306::interface::i2c::I2cInterface;
 
 const ROTARY_ENCODER_PERIOD: u32 = 720_000;
 const FLOW_COUNTER_PERIOD: u32 = 500_000;
@@ -33,6 +39,7 @@ static CONTAINER_SIZES: [(u16, &str);7] = [
 const APP: () = {
     struct Resources {
         rotary_encoder: Rotary<PB10<Input<PullUp>>,PB11<Input<PullUp>>>,
+        display: GraphicsMode<I2cInterface<BlockingI2c<I2C1, (PB8<Alternate<OpenDrain>>, PB9<Alternate<OpenDrain>>)>>>,
         container_choice: u8,
     }
 
@@ -49,9 +56,9 @@ const APP: () = {
         let device: stm32f1xx_hal::pac::Peripherals = cx.device;
 
         let mut rcc = device.RCC.constrain();
-        let mut _afio = device.AFIO.constrain(&mut rcc.apb2);
+        let mut afio = device.AFIO.constrain(&mut rcc.apb2);
         let mut flash = device.FLASH.constrain();
-        let _clocks = rcc
+        let clocks = rcc
             .cfgr
             .use_hse(8.mhz())
             .sysclk(72.mhz())
@@ -73,6 +80,30 @@ const APP: () = {
 
         let enc = Rotary::new(pin_a, pin_b);
 
+        let scl = portb.pb8.into_alternate_open_drain(&mut portb.crh);
+        let sda = portb.pb9.into_alternate_open_drain(&mut portb.crh);
+
+        let i2c = BlockingI2c::i2c1(
+            device.I2C1,
+            (scl, sda),
+            &mut afio.mapr,
+            Mode::Fast {
+                frequency: 400_000.hz(),
+                duty_cycle: DutyCycle::Ratio2to1,
+            },
+            clocks,
+            &mut rcc.apb1,
+            1000,
+            10,
+            1000,
+            1000,
+        );
+
+        let mut disp: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
+        disp.init().unwrap();
+        disp.flush().unwrap();
+
+
         hprintln!("init").unwrap();
 
         cx.schedule.scan_rotary_encoder(now + ROTARY_ENCODER_PERIOD.cycles()).unwrap();
@@ -81,6 +112,7 @@ const APP: () = {
         init::LateResources{
             rotary_encoder: enc,
             container_choice: 0,
+            display: disp,
         }
     }
 
