@@ -8,19 +8,26 @@ use cortex_m_semihosting::hprintln;
 use panic_semihosting as _;
 use rtfm::cyccnt::U32Ext as _;
 
-use stm32f1xx_hal::gpio::gpiob::*;
-use stm32f1xx_hal::gpio::*;
-use stm32f1xx_hal::i2c::{BlockingI2c, DutyCycle, Mode};
-use stm32f1xx_hal::prelude::*;
-use stm32f1xx_hal::stm32::I2C1;
-
-use rotary_encoder_hal::{Direction, Rotary};
-
-//use embedded_graphics::{circle, icoord, line, rect, text_6x8, triangle};
-use embedded_graphics::{icoord, text_6x8};
-use ssd1306::interface::i2c::I2cInterface;
-use ssd1306::prelude::*;
-use ssd1306::Builder;
+use stm32f1xx_hal::{
+    gpio::gpiob::*,
+    gpio::*,
+    i2c::{BlockingI2c, DutyCycle, Mode},
+    prelude::*,
+    stm32::I2C1,
+};
+use rotary_encoder_hal::{
+    Direction, 
+    Rotary,
+};
+use embedded_graphics::{
+    fonts::Font6x8,
+    prelude::*,
+};
+use ssd1306::{
+    interface::i2c::I2cInterface,
+    prelude::*,
+    Builder,
+};
 
 const ROTARY_ENCODER_PERIOD: u32 = 720_000;
 const FLOW_COUNTER_PERIOD: u32 = 500_000;
@@ -102,6 +109,7 @@ const APP: () = {
 
         let mut disp: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
         disp.init().unwrap();
+        disp.clear();
         disp.flush().unwrap();
 
         hprintln!("init").unwrap();
@@ -151,9 +159,11 @@ const APP: () = {
 
     #[task(schedule = [update_display], resources = [container_choice, display])]
     fn update_display(cx: update_display::Context) {
-        cx.resources
-            .display
-            .draw(text_6x8!("Hello world!", stroke = Some(1u8)).translate(icoord!(5, 50)));
+        let display = cx.resources.display;
+        
+        display.draw(Font6x8::render_str("Hello world!").into_iter());
+
+        display.flush().unwrap();
 
         cx.schedule
             .update_display(cx.scheduled + UPDATE_DISPLAY_PERIOD.cycles())
