@@ -1,13 +1,14 @@
 #![deny(unsafe_code)]
-#![allow(clippy::missing_safety_doc)]
 #![deny(warnings)]
 #![no_main]
 #![no_std]
 
-use cortex_m_semihosting::hprintln;
-use panic_semihosting as _;
-use rtfm::cyccnt::U32Ext as _;
+extern crate panic_semihosting;
 
+use cortex_m_semihosting::hprintln;
+use embedded_hal::digital::v2::OutputPin;
+use rtfm::app;
+use rtfm::cyccnt::U32Ext;
 use stm32f1xx_hal::{
     gpio::gpiob::*,
     gpio::*,
@@ -20,7 +21,7 @@ use rotary_encoder_hal::{
     Rotary,
 };
 use embedded_graphics::{
-    fonts::Font6x8,
+    fonts::Font8x16,
     prelude::*,
 };
 use ssd1306::{
@@ -29,7 +30,7 @@ use ssd1306::{
     Builder,
 };
 
-const ROTARY_ENCODER_PERIOD: u32 = 720_000;
+const ROTARY_ENCODER_PERIOD: u32 = 72_000;
 const FLOW_COUNTER_PERIOD: u32 = 500_000;
 const UPDATE_DISPLAY_PERIOD: u32 = 7_200_000;
 
@@ -47,8 +48,8 @@ type Display = GraphicsMode<
     I2cInterface<BlockingI2c<I2C1, (PB8<Alternate<OpenDrain>>, PB9<Alternate<OpenDrain>>)>>,
 >;
 
-// RTFM main declaration
-#[rtfm::app(device = stm32f1xx_hal::pac, peripherals = true, monotonic = rtfm::cyccnt::CYCCNT)]
+// We need to pass monotonic = rtfm::cyccnt::CYCCNT to use schedule feature fo RTFM
+#[app(device = stm32f1xx_hal::pac, peripherals = true, monotonic = rtfm::cyccnt::CYCCNT)]
 const APP: () = {
     struct Resources {
         rotary_encoder: Rotary<PB10<Input<PullUp>>, PB11<Input<PullUp>>>,
@@ -56,20 +57,20 @@ const APP: () = {
         container_choice: u8,
     }
 
-    #[init(schedule = [scan_rotary_encoder, scan_flow_counter])]
-    fn init(mut cx: init::Context) -> init::LateResources {
-        cx.core.DCB.enable_trace();
+    #[init(schedule = [scan_rotary_encoder, scan_flow_counter, update_display])]
+    fn init(cx: init::Context) -> init::LateResources {
+        // Enable cycle counter
+        let mut core = cx.core;
+        core.DWT.enable_cycle_counter();
 
-        // semantically, the monotonic timer is frozen at time "zero" during `init`
-        // NOTE do *not* call `Instant::now` in this context; it will return a nonsense value
-        let now = cx.start; // the start time of the system
+        hprintln!("Init hardware...").unwrap();
 
-        // Device specific peripherals
-        let device: stm32f1xx_hal::pac::Peripherals = cx.device;
+        let device: stm32f1xx_hal::stm32::Peripherals = cx.device;
 
+        // Setup clocks
+        let mut flash = device.FLASH.constrain();
         let mut rcc = device.RCC.constrain();
         let mut afio = device.AFIO.constrain(&mut rcc.apb2);
-        let mut flash = device.FLASH.constrain();
         let clocks = rcc
             .cfgr
             .use_hse(8.mhz())
@@ -77,17 +78,25 @@ const APP: () = {
             .pclk1(36.mhz())
             .freeze(&mut flash.acr);
 
-        let mut portb = device.GPIOB.split(&mut rcc.apb2);
-        let mut portc = device.GPIOC.split(&mut rcc.apb2);
+        // Setup LED
+        hprintln!("Setup LED on PC13").unwrap();
+        let mut gpioc = device.GPIOC.split(&mut rcc.apb2);
+        let mut led = gpioc
+            .pc13
+            .into_push_pull_output_with_state(&mut gpioc.crh, State::Low);
+        led.set_low().unwrap();
 
-        let mut _led_pin = portc.pc13.into_push_pull_output(&mut portc.crh);
+        let mut portb = device.GPIOB.split(&mut rcc.apb2);
+        //let mut _portc = device.GPIOC.split(&mut rcc.apb2);
+
         let mut _relay_pin = portb.pb1.into_push_pull_output(&mut portb.crl);
 
+        hprintln!("Setting up rotary encoder").unwrap();
         let pin_a = portb.pb10.into_pull_up_input(&mut portb.crh);
         let pin_b = portb.pb11.into_pull_up_input(&mut portb.crh);
 
         let enc = Rotary::new(pin_a, pin_b);
-
+        hprintln!("Setting up display").unwrap();
         let scl = portb.pb8.into_alternate_open_drain(&mut portb.crh);
         let sda = portb.pb9.into_alternate_open_drain(&mut portb.crh);
 
@@ -108,19 +117,33 @@ const APP: () = {
         );
 
         let mut disp: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
-        disp.init().unwrap();
+        hprintln!("Init display").unwrap();
+        match disp.init() {
+            Ok(_) => (),
+            Err(e) => hprintln!("Failed to initialisde display {:?}", e).unwrap(),
+        }
+        match disp.display_on(true) {
+            Ok(_) => (),
+            Err(e) => hprintln!("Failed to call display on {:?}", e).unwrap(),
+        }
         disp.clear();
         disp.flush().unwrap();
 
-        hprintln!("init").unwrap();
+        let now = cx.start;
 
+        hprintln!("Scheduling tasks").unwrap();
+        // Schedule the blinking task
         cx.schedule
             .scan_rotary_encoder(now + ROTARY_ENCODER_PERIOD.cycles())
             .unwrap();
         cx.schedule
             .scan_flow_counter(now + FLOW_COUNTER_PERIOD.cycles())
             .unwrap();
-
+        cx.schedule
+            .update_display(now + UPDATE_DISPLAY_PERIOD.cycles())
+            .unwrap();
+        hprintln!("Init done").unwrap();
+        led.set_high().unwrap();
         init::LateResources {
             rotary_encoder: enc,
             container_choice: 0,
@@ -134,13 +157,14 @@ const APP: () = {
             Direction::Clockwise => {
                 *cx.resources.container_choice += 1;
                 if *cx.resources.container_choice >= (CONTAINER_SIZES.len() as u8) {
-                    *cx.resources.container_choice = (CONTAINER_SIZES.len() as u8) - 1;
+                    *cx.resources.container_choice = 0;
                 }
             }
             Direction::CounterClockwise => {
-                if *cx.resources.container_choice > 0 {
-                    *cx.resources.container_choice -= 1;
+                if *cx.resources.container_choice == 0 {
+                    *cx.resources.container_choice = CONTAINER_SIZES.len() as u8;
                 }
+                *cx.resources.container_choice -= 1;
             }
             Direction::None => {}
         }
@@ -160,8 +184,9 @@ const APP: () = {
     #[task(schedule = [update_display], resources = [container_choice, display])]
     fn update_display(cx: update_display::Context) {
         let display = cx.resources.display;
-        
-        display.draw(Font6x8::render_str("Hello world!").into_iter());
+        let choice = *cx.resources.container_choice as usize;
+        display.clear();
+        display.draw(Font8x16::render_str(CONTAINER_SIZES[choice].1).into_iter());
 
         display.flush().unwrap();
 
@@ -171,6 +196,6 @@ const APP: () = {
     }
 
     extern "C" {
-        fn USART1();
+        fn EXTI0();
     }
 };
