@@ -6,9 +6,12 @@
 extern crate panic_semihosting;
 
 use cortex_m_semihosting::hprintln;
+use embedded_graphics::{fonts::Font8x16, prelude::*};
 use embedded_hal::digital::v2::OutputPin;
+use rotary_encoder_hal::{Direction, Rotary};
 use rtfm::app;
 use rtfm::cyccnt::U32Ext;
+use ssd1306::{interface::i2c::I2cInterface, prelude::*, Builder};
 use stm32f1xx_hal::{
     gpio::gpiob::*,
     gpio::*,
@@ -16,23 +19,10 @@ use stm32f1xx_hal::{
     prelude::*,
     stm32::I2C1,
 };
-use rotary_encoder_hal::{
-    Direction, 
-    Rotary,
-};
-use embedded_graphics::{
-    fonts::Font8x16,
-    prelude::*,
-};
-use ssd1306::{
-    interface::i2c::I2cInterface,
-    prelude::*,
-    Builder,
-};
 
 const ROTARY_ENCODER_PERIOD: u32 = 72_000;
-const FLOW_COUNTER_PERIOD: u32 = 500_000;
-const UPDATE_DISPLAY_PERIOD: u32 = 7_200_000;
+const FLOW_COUNTER_PERIOD: u32 = 36_000;
+const UPDATE_DISPLAY_PERIOD: u32 = 720_000;
 
 static CONTAINER_SIZES: [(u16, &str); 7] = [
     (330, "330mL Bottle"),
