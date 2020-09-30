@@ -9,25 +9,19 @@ extern crate panic_semihosting;
 
 use cortex_m_semihosting::hprintln;
 use embedded_graphics::{
-    prelude::*,
-    pixelcolor::BinaryColor,
-    primitives::Rectangle,
-    style::{
-        PrimitiveStyleBuilder,
-        TextStyleBuilder
-    },
     fonts::{Font6x8, Text},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::Rectangle,
+    style::{PrimitiveStyleBuilder, TextStyleBuilder},
 };
 use embedded_hal::digital::v2::OutputPin;
 use rotary_encoder_hal::{Direction, Rotary};
 use rtic::app;
 use rtic::cyccnt::U32Ext;
 use ssd1306::{
-    prelude::*,
-    mode::graphics::GraphicsMode,
-    Builder, 
-    I2CDIBuilder,
-    displaysize::DisplaySize128x64};
+    displaysize::DisplaySize128x64, mode::graphics::GraphicsMode, prelude::*, Builder, I2CDIBuilder,
+};
 use stm32f1xx_hal::{
     gpio::gpiob::*,
     gpio::*,
@@ -183,7 +177,6 @@ const APP: () = {
 
     #[task(schedule = [scan_rotary_encoder], resources = [rotary_encoder, container_choice])]
     fn scan_rotary_encoder(cx: scan_rotary_encoder::Context) {
-
         match cx.resources.rotary_encoder.update().unwrap() {
             Direction::Clockwise => {
                 *cx.resources.container_choice += 1;
@@ -229,29 +222,28 @@ const APP: () = {
         display.clear();
 
         let style = PrimitiveStyleBuilder::new()
-        .stroke_width(1)
-        .stroke_color(BinaryColor::On)
-        .build();
+            .stroke_width(1)
+            .stroke_color(BinaryColor::On)
+            .build();
 
         let text_style = TextStyleBuilder::new(Font6x8)
-        .text_color(BinaryColor::On)
-        .build();
+            .text_color(BinaryColor::On)
+            .build();
 
         Text::new(CONTAINER_SIZES[choice].1, Point::zero())
-        .into_styled(text_style)
-        .draw(display)
-        .unwrap();
-
+            .into_styled(text_style)
+            .draw(display)
+            .unwrap();
 
         Rectangle::new(Point::new(2, 36), Point::new(62, 48))
-        .into_styled(style)
-        .draw(display)
-        .unwrap();
+            .into_styled(style)
+            .draw(display)
+            .unwrap();
 
         Rectangle::new(Point::new(2, 36), Point::new(32, 48))
-        .into_styled(style)
-        .draw(display)
-        .unwrap();
+            .into_styled(style)
+            .draw(display)
+            .unwrap();
 
         display.flush().unwrap();
 
