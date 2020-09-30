@@ -1,17 +1,33 @@
 #![deny(unsafe_code)]
-#![deny(warnings)]
+//#![deny(warnings)]
 #![no_main]
 #![no_std]
+
+mod flow_counter;
 
 extern crate panic_semihosting;
 
 use cortex_m_semihosting::hprintln;
-use embedded_graphics::{fonts::Font8x16, prelude::*};
+use embedded_graphics::{
+    prelude::*,
+    pixelcolor::BinaryColor,
+    primitives::Rectangle,
+    style::{
+        PrimitiveStyleBuilder,
+        TextStyleBuilder
+    },
+    fonts::{Font6x8, Text},
+};
 use embedded_hal::digital::v2::OutputPin;
 use rotary_encoder_hal::{Direction, Rotary};
-use rtfm::app;
-use rtfm::cyccnt::U32Ext;
-use ssd1306::{interface::i2c::I2cInterface, prelude::*, Builder};
+use rtic::app;
+use rtic::cyccnt::U32Ext;
+use ssd1306::{
+    prelude::*,
+    mode::graphics::GraphicsMode,
+    Builder, 
+    I2CDIBuilder,
+    displaysize::DisplaySize128x64};
 use stm32f1xx_hal::{
     gpio::gpiob::*,
     gpio::*,
@@ -20,9 +36,13 @@ use stm32f1xx_hal::{
     stm32::I2C1,
 };
 
-const ROTARY_ENCODER_PERIOD: u32 = 72_000;
-const FLOW_COUNTER_PERIOD: u32 = 36_000;
-const UPDATE_DISPLAY_PERIOD: u32 = 720_000;
+use crate::flow_counter::*;
+
+const ROTARY_ENCODER_PERIOD: u32 = 7200;
+const FLOW_COUNTER_PERIOD: u32 = 720_000;
+const UPDATE_DISPLAY_PERIOD: u32 = 7_200_000;
+
+const PULSES_PER_L: f32 = 6.6;
 
 static CONTAINER_SIZES: [(u16, &str); 7] = [
     (330, "330mL Bottle"),
@@ -35,16 +55,23 @@ static CONTAINER_SIZES: [(u16, &str); 7] = [
 ];
 
 type Display = GraphicsMode<
-    I2cInterface<BlockingI2c<I2C1, (PB8<Alternate<OpenDrain>>, PB9<Alternate<OpenDrain>>)>>,
+    I2CInterface<BlockingI2c<I2C1, (PB8<Alternate<OpenDrain>>, PB9<Alternate<OpenDrain>>)>>,
 >;
 
+type FlowSensor = FlowCounter<PB7<Input<PullUp>>>;
+
+type ValvePin = PB6<Output<PushPull>>;
+
 // We need to pass monotonic = rtfm::cyccnt::CYCCNT to use schedule feature fo RTFM
-#[app(device = stm32f1xx_hal::pac, peripherals = true, monotonic = rtfm::cyccnt::CYCCNT)]
+#[app(device = stm32f1xx_hal::pac, peripherals = true, monotonic = rtic::cyccnt::CYCCNT)]
 const APP: () = {
     struct Resources {
         rotary_encoder: Rotary<PB10<Input<PullUp>>, PB11<Input<PullUp>>>,
         display: Display,
         container_choice: u8,
+        flow_volume: f32,
+        flow_sensor: FlowSensor,
+        valve_pin: ValvePin,
     }
 
     #[init(schedule = [scan_rotary_encoder, scan_flow_counter, update_display])]
@@ -79,11 +106,20 @@ const APP: () = {
         let mut portb = device.GPIOB.split(&mut rcc.apb2);
         //let mut _portc = device.GPIOC.split(&mut rcc.apb2);
 
-        let mut _relay_pin = portb.pb1.into_push_pull_output(&mut portb.crl);
+        let mut valve_pin = portb.pb6.into_push_pull_output(&mut portb.crl);
+        let sensor_pin = portb.pb7.into_pull_up_input(&mut portb.crl);
+
+        // Close the valve initially
+        valve_pin.set_low().unwrap();
+
+        let flow_sensor: FlowSensor = FlowCounter::new(sensor_pin, PULSES_PER_L);
 
         hprintln!("Setting up rotary encoder").unwrap();
         let pin_a = portb.pb10.into_pull_up_input(&mut portb.crh);
         let pin_b = portb.pb11.into_pull_up_input(&mut portb.crh);
+
+        //let pin_a = portb.pb10.into_floating_input(&mut portb.crh);
+        //let pin_b = portb.pb11.into_floating_input(&mut portb.crh);
 
         let enc = Rotary::new(pin_a, pin_b);
         hprintln!("Setting up display").unwrap();
@@ -106,7 +142,8 @@ const APP: () = {
             1000,
         );
 
-        let mut disp: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
+        let interface = I2CDIBuilder::new().init(i2c);
+        let mut disp: GraphicsMode<_> = Builder::new().connect(interface).into();
         hprintln!("Init display").unwrap();
         match disp.init() {
             Ok(_) => (),
@@ -137,12 +174,16 @@ const APP: () = {
         init::LateResources {
             rotary_encoder: enc,
             container_choice: 0,
+            flow_volume: 0.0,
             display: disp,
+            flow_sensor,
+            valve_pin,
         }
     }
 
     #[task(schedule = [scan_rotary_encoder], resources = [rotary_encoder, container_choice])]
     fn scan_rotary_encoder(cx: scan_rotary_encoder::Context) {
+
         match cx.resources.rotary_encoder.update().unwrap() {
             Direction::Clockwise => {
                 *cx.resources.container_choice += 1;
@@ -161,22 +202,56 @@ const APP: () = {
 
         cx.schedule
             .scan_rotary_encoder(cx.scheduled + ROTARY_ENCODER_PERIOD.cycles())
-            .unwrap()
+            .unwrap();
     }
 
-    #[task(schedule = [scan_flow_counter])]
+    #[task(schedule = [scan_flow_counter], resources = [flow_sensor, valve_pin, container_choice, flow_volume])]
     fn scan_flow_counter(cx: scan_flow_counter::Context) {
         cx.schedule
             .scan_flow_counter(cx.scheduled + FLOW_COUNTER_PERIOD.cycles())
-            .unwrap()
+            .unwrap();
+
+        let choice = *cx.resources.container_choice as usize;
+        let target_ml = CONTAINER_SIZES[choice].0 as f32;
+        let volume_l = cx.resources.flow_sensor.volume();
+        cx.resources.flow_sensor.update().unwrap();
+        if volume_l * 1000.0 >= target_ml {
+            // Close valve when we have seen enough volume
+            cx.resources.valve_pin.set_low().unwrap();
+        }
+        *cx.resources.flow_volume = volume_l;
     }
 
-    #[task(schedule = [update_display], resources = [container_choice, display])]
+    #[task(schedule = [update_display], resources = [container_choice, display, flow_volume])]
     fn update_display(cx: update_display::Context) {
         let display = cx.resources.display;
         let choice = *cx.resources.container_choice as usize;
         display.clear();
-        display.draw(Font8x16::render_str(CONTAINER_SIZES[choice].1).into_iter());
+
+        let style = PrimitiveStyleBuilder::new()
+        .stroke_width(1)
+        .stroke_color(BinaryColor::On)
+        .build();
+
+        let text_style = TextStyleBuilder::new(Font6x8)
+        .text_color(BinaryColor::On)
+        .build();
+
+        Text::new(CONTAINER_SIZES[choice].1, Point::zero())
+        .into_styled(text_style)
+        .draw(display)
+        .unwrap();
+
+
+        Rectangle::new(Point::new(2, 36), Point::new(62, 48))
+        .into_styled(style)
+        .draw(display)
+        .unwrap();
+
+        Rectangle::new(Point::new(2, 36), Point::new(32, 48))
+        .into_styled(style)
+        .draw(display)
+        .unwrap();
 
         display.flush().unwrap();
 
